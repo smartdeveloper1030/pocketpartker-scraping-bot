@@ -722,101 +722,24 @@ async def perform_login(max_depth: int = 3) -> tuple[str, str, str] | None:
     # Loading Old Session cookies
     core.cookies = core.load_cookies()
 
+    retries = 3
+    delay = 1  # Initial delay in seconds
+
     IS_LOGGED_IN = False
     if core.cookies:
         core.session.cookies.update(core.cookies)
-        try:
+        for attempt in range(retries):
             res = await core.session.get(core.logged_in_link, timeout=30)
-        except (httpx.ConnectError, httpx.TimeoutException, httpx.ProxyError) as e:
-            logger.warning(f"Connection error during session validation: {e}")
-            res = None
-        except Exception as e:
-            logger.error(f"Unexpected error during session validation: {e}")
-            res = None
-            
-        if res is not None:
-            # Save the response as an HTML file
-            with open("response.html", "w", encoding="utf-8") as f:
-                f.write(res.text)
+            if res is not None:
+                with open("response.html", "w", encoding="utf-8") as f:
+                    f.write(res.text)
 
-        if IS_LOGGED_IN := validate_login(res):
-            logger.debug("Old session worked fine.")
-            data = bs(res.text, "lxml")
-            status_span = data.find('span', class_='status-block-color')
-            account_status = status_span.text.strip() if status_span else None
-            print("account_status: ", account_status)
-            account_span = data.find_all('span', class_='text-truncate-md')
-            print("len: ", len(account_span))
-            account_email = ""
-            account_id = ""
-            try:
-                account_email = account_span[1].text.strip() if account_span[1] else None
-                account_id = account_span[2].text.strip() if account_span[2] else None
-            except:
-                account_email = account_span[0].text.strip() if account_span[0] else None
-                account_id = account_span[1].text.strip() if account_span[1] else None
-
-            if account_id:
-                account_id = account_id.split("ID: ")[1].strip()
-            
-            print("Account Status:", account_status)
-            print("Account Email: ", account_email)
-            print("Account ID: ", account_id)
-            return account_status, account_email, account_id
-            
-        else:
-            logger.debug("Old Session expired!! Trying to login again..")
-            core.session.cookies.clear()
-            try:
-                await core.session.aclose()
-                await create_session()
-                logger.info("Created new session with new proxy due to session expiration")
-            except Exception as proxy_error:
-                logger.error(f"Failed to get new proxy after session expiration: {proxy_error}")
-                return None
-    if not IS_LOGGED_IN:
-        try:
-            res = await core.session.get(url=core.home_link, timeout=60.0)  # Increased timeout
-            res_l = await core.session.post(
-                url=core.login_link, 
-                data=await generate_login_payload(data=bs(res.text, "lxml")),
-                timeout=60.0  # Increased timeout
-            )
-            print("---------")
-            print(res_l.text)
-            if '"is2FA":true' in res_l.text:
-                print("OTP verification required")
-                # Add retry logic for OTP verification
-                max_retries = 3
-                for attempt in range(max_retries):
-                    try:
-                        res_l = await core.session.post(
-                            url=core.otp_verify_link,
-                            data=await generate_login_payload(data=bs(res.text, "lxml"), otp_verify=True),
-                            timeout=60.0  # Increased timeout
-                        )
-                        break  # If successful, break the retry loop
-                    except (httpx.ReadTimeout, httpx.ConnectError, httpx.ProxyError) as e:
-                        if attempt < max_retries - 1:
-                            logger.debug(f"OTP verification error, attempt {attempt + 1}/{max_retries}: {e}")
-                            await asyncio.sleep(5)
-                        else:
-                            logger.error("OTP verification failed after all retries")
-                            raise
-                    except Exception as e:
-                        logger.error(f"Unexpected error during OTP verification: {e}")
-                        raise
-            if validate_login(res_l):
-                logger.debug("Logged-In successfully!")
-                print("login")
-                core.save_cookies(core.session)
-                data = bs(res_l.text, "lxml")
+            if IS_LOGGED_IN := validate_login(res):
+                logger.debug("Old session worked fine.")
+                data = bs(res.text, "lxml")
                 status_span = data.find('span', class_='status-block-color')
                 account_status = status_span.text.strip() if status_span else None
-                print("Account Status:", account_status)
-                
                 account_span = data.find_all('span', class_='text-truncate-md')
-                print("Len: ", len(account_span))
                 account_email = ""
                 account_id = ""
                 try:
@@ -825,41 +748,62 @@ async def perform_login(max_depth: int = 3) -> tuple[str, str, str] | None:
                 except:
                     account_email = account_span[0].text.strip() if account_span[0] else None
                     account_id = account_span[1].text.strip() if account_span[1] else None
-                
+
                 if account_id:
                     account_id = account_id.split("ID: ")[1].strip()
+                
+                print("Account Status:", account_status)
                 print("Account Email: ", account_email)
                 print("Account ID: ", account_id)
+               
                 return account_status, account_email, account_id
             else:
-                logger.error("Login failed after all attempts")
-                return None
-        except httpx.ReadTimeout as e:
-            logger.error(f"Connection timeout: {e}")
-            # Try to switch proxy and retry login
-            logger.info("Attempting to switch proxy due to timeout")
+                logger.debug("Old Session expired!! Trying to login again..")
+                core.session.cookies.clear()
+                
+        await core.session.aclose()
+        await create_session()
+
+    if not IS_LOGGED_IN:
+        for attempt in range(retries):
             try:
-                await core.session.aclose()
-                await create_session()
-                logger.info("Switched to new rotating proxy due to timeout, retrying login")
-                return await perform_login(max_depth - 1)
-            except Exception as proxy_error:
-                logger.error(f"Failed to get new rotating proxy after timeout: {proxy_error}")
-            raise
-        except Exception as e:
-            logger.error(f"Login error: {e}")
-            # Try to switch proxy and retry login for other errors
-            if "proxy" in str(e).lower() or "connection" in str(e).lower():
-                logger.info("Attempting to switch proxy due to connection error")
-                try:
-                    await core.session.aclose()
-                    await create_session()
-                    logger.info("Switched to new rotating proxy due to connection error, retrying login")
-                    return await perform_login(max_depth - 1)
-                except Exception as proxy_error:
-                    logger.error(f"Failed to get new rotating proxy after connection error: {proxy_error}")
-            raise
-        return None
+                res = await core.session.get(url=core.home_link, timeout=60)
+                res_l = await core.session.post(url=core.login_link, data=await generate_login_payload(
+                    data=bs(res.text, "lxml")
+                ), timeout=30)
+
+                if 'name="one_time_password"' in res_l.text or '"is2FA":true' in res_l.text:
+                    res_l = await core.session.post(url=core.otp_verify_link, data=await generate_login_payload(
+                        data=bs(res_l.text, "lxml"), otp_verify=True
+                    ))
+
+                if validate_login(res_l):
+                    logger.debug("Logged-In successfully!")
+                    core.save_cookies(core.session)
+                    data = bs(res_l.text, "lxml")
+                    status_span = data.find('span', class_='status-block-color')
+                    account_status = status_span.text.strip() if status_span else None
+                    account_span = data.find_all('span', class_='text-truncate-md')
+                    account_email = ""
+                    account_id = ""
+                    try:
+                        account_email = account_span[1].text.strip() if account_span[1] else None
+                        account_id = account_span[2].text.strip() if account_span[2] else None
+                    except:
+                        account_email = account_span[0].text.strip() if account_span[0] else None
+                        account_id = account_span[1].text.strip() if account_span[1] else None
+
+                    if account_id:
+                        account_id = account_id.split("ID: ")[1].strip()
+
+                    return account_status, account_email, account_id
+            except httpx.ConnectTimeout:
+                logger.warning(f"ConnectTimeout occurred, retrying in {delay} seconds...")
+                await asyncio.sleep(1)
+                delay *= ( attempt + 1 )
+            except Exception as e:
+                logger.exception(f"Unexpected error during login: {e}")
+                break
 
 def validate_minute(minute: int) -> bool:
     # return True
@@ -1015,20 +959,13 @@ async def broadcast(message: types.Message = None) -> None:
     current_stats = {}
     PROCESSED = False
     ALERT_SENT = False
-    last_proxy_reset = time.time()
-    
+
     await test_func()
     # return
     while BROADCAST_EVENT.is_set():
         # print("BROADCAST_EVENT.is_set(): ", BROADCAST_EVENT.is_set())
         try:
-            # Periodic proxy health check (every 30 minutes)
-            current_time = time.time()
-            if current_time - last_proxy_reset > 1800:  # 30 minutes
-                # For rotating proxy, we just log this as the proxy service handles rotation
-                logger.info("Periodic proxy check - using rotating proxy service")
-                last_proxy_reset = current_time
-            
+                        
             if not PROCESSED:
                 if validate_minute(59):
                     current_stats = await get_statistics()
