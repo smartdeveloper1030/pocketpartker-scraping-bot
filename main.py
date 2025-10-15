@@ -1015,20 +1015,13 @@ async def broadcast(message: types.Message = None) -> None:
     current_stats = {}
     PROCESSED = False
     ALERT_SENT = False
-    last_proxy_reset = time.time()
-    
+
     await test_func()
     # return
     while BROADCAST_EVENT.is_set():
         # print("BROADCAST_EVENT.is_set(): ", BROADCAST_EVENT.is_set())
         try:
-            # Periodic proxy health check (every 30 minutes)
-            current_time = time.time()
-            if current_time - last_proxy_reset > 1800:  # 30 minutes
-                # For rotating proxy, we just log this as the proxy service handles rotation
-                logger.info("Periodic proxy check - using rotating proxy service")
-                last_proxy_reset = current_time
-            
+                        
             if not PROCESSED:
                 if validate_minute(59):
                     current_stats = await get_statistics()
