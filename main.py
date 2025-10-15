@@ -744,9 +744,7 @@ async def perform_login(max_depth: int = 3) -> tuple[str, str, str] | None:
             data = bs(res.text, "lxml")
             status_span = data.find('span', class_='status-block-color')
             account_status = status_span.text.strip() if status_span else None
-            print("account_status: ", account_status)
             account_span = data.find_all('span', class_='text-truncate-md')
-            print("len: ", len(account_span))
             account_email = ""
             account_id = ""
             try:
