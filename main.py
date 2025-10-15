@@ -1168,11 +1168,11 @@ async def process_withdrawal(_type: str, amount: int | float) -> bool:
             pass
         
         # Check if the response content indicates unauthorized access
-        if b"Unauthenticated" in res_r.content or b"error" in res_r.content:
-            print("==================unauthenticated==================")
-            core.session.aclose()
-            core.delete_cookies()
-            return False
+        # if b"Unauthenticated" in res_r.content or b"error" in res_r.content:
+        #     print("==================unauthenticated==================")
+        #     core.session.cookies.clear()
+        #     core.delete_cookies()
+        #     return False
 
         payment_payload = generate_payment_payload(
             data=bs(res_r.text, "lxml"), _type=_type, balance=amount
