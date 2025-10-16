@@ -981,21 +981,25 @@ def save_commission_to_db(current_stats: dict) -> None:
     except Exception as e:
         logger.exception(f"Failed to save commission data to database: {e}")
 
-async def test_func():
+async def test_func(isStart: bool = True):  
     current_stats = await get_statistics()
-    save_commission_to_db(current_stats["Current week"])
     print("current_stats: ", current_stats)
+    
+    save_commission_to_db(current_stats["Current week"])
+    await asyncio.sleep(5)
+
     core.chat_ids = core.load_chatids()
-    print(core.chat_ids)
     for period in current_stats:
         stats = current_stats[period]
-        # print("processed_message: ", format_only_change(stats, period))
-        if processed_message := format_even_no_change(stats, period):
+        temp = []
+        if isStart:
+            temp = format_even_no_change(stats, period)
+        else:
+            temp = format_only_change(stats, period)
+        if processed_message := temp:
             for chat_id in core.chat_ids:
                 print("chat_id: ", chat_id)
                 await send_message(chat_id, text=core.fix_message_format(processed_message))
-                # print(processed_message)
-                # print(core.fix_message_format(processed_message))
                 
 async def broadcast(message: types.Message = None) -> None:
     if message:
@@ -1005,13 +1009,21 @@ async def broadcast(message: types.Message = None) -> None:
     current_stats = {}
     PROCESSED = False
     ALERT_SENT = False
+    ALERT_RESET_FLAG = False
 
     await test_func()
     # return
     while BROADCAST_EVENT.is_set():
         # print("BROADCAST_EVENT.is_set(): ", BROADCAST_EVENT.is_set())
         try:
-                        
+            now = datetime.now()
+            if now.minute in range(1, 21) and not ALERT_RESET_FLAG:
+                await test_func(isStart=False)
+                await asyncio.sleep(60)
+                ALERT_RESET_FLAG = True
+            elif now.minute > 20 and ALERT_RESET_FLAG:
+                ALERT_RESET_FLAG = False
+
             if not PROCESSED:
                 if validate_minute(59):
                     current_stats = await get_statistics()
@@ -1026,6 +1038,7 @@ async def broadcast(message: types.Message = None) -> None:
             if not ALERT_SENT:
                 if validate_minute(0):
                     ALERT_SENT = True
+                    ALERT_RESET_FLAG = True
                     core.chat_ids = core.load_chatids()
                     for period in current_stats:
                         stats = current_stats[period]
