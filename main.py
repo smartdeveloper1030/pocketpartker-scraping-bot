@@ -166,21 +166,23 @@ def generate_payment_payload(data: bs, _type: str, balance: int | float) -> dict
 async def get_recaptcha_code() -> str:
     loop = asyncio.get_running_loop()
     
-    solver = recaptchaV2Proxyless()
+    solver = recaptchaV2Proxyless() # Here the magic starts
     solver.set_verbose(0)
     solver.set_key(core.anticaptcha_api_key)
     solver.set_website_url(core.login_link)
     solver.set_website_key("6LeF_OQeAAAAAMl5ATxF48du4l-4xmlvncSUXGKR")
     g_response = solver.solve_and_return_solution()
-    
-    if g_response != 0:
+    if g_response != 0: # If answer not 0, success!
         print("[ ] g-response SUCCESS")
         return g_response
+        return
     else:
-        print("[ ] Task finished with error " + solver.error_code)
+        print("[ ] Task finished with error "+solver.error_code)
         print("[ ] Reporting anticaptcha error via API.")
-        solver.report_incorrect_image_captcha()
-        raise Exception(f"Captcha solving failed: {solver.error_code}")
+        solver.report_incorrect_image_captcha() # Report anticaptcha error to the API
+        print("[ ] Refreshing page...")
+        # driver.refresh() # Refresh page and try again if anticaptcha didn't work
+        print("[ ] Trying again.")
 
 async def generate_login_payload(data: bs, otp_verify: bool = False) -> dict:
     payload = {
@@ -705,64 +707,76 @@ def send_alert() -> None:
     else:
         logger.debug("No reports were processed!!")
 
-async def create_session() -> None:
-    proxies = await get_rotating_proxy()
-    core.session = httpx.AsyncClient(
-        headers=core.base_headers,
-        follow_redirects=True,
-        proxies=proxies,
-        timeout=60.0
-    )
-
-async def perform_login(max_depth: int = 3) -> tuple[str, str, str] | None:
-    if max_depth <= 0:
-        logger.error("Maximum depth reached")
-        return None
-        
+async def perform_login() -> None:
+    # Get a working proxy with testing
+    proxy_config = await get_rotating_proxy()
+    if proxy_config:
+        # Close previous session if exists
+        if hasattr(core, "session") and core.session:
+            await core.session.aclose()
+        transport = httpx.AsyncHTTPTransport(retries=3)
+        core.session = httpx.AsyncClient(
+            headers=core.base_headers,
+            transport=transport,
+            follow_redirects=True,
+            proxies=proxy_config,
+            timeout=60.0
+        )
+        logger.info("Created new session with working proxy")
+    else:
+        # Fallback: use existing session or create a new one without proxy
+        if not hasattr(core, "session") or not core.session:
+            core.session = httpx.AsyncClient(
+                headers=core.base_headers,
+                follow_redirects=True,
+                timeout=60.0
+            )
+            logger.warning("No working proxies available, using direct connection")
+            
     # Loading Old Session cookies
     core.cookies = core.load_cookies()
-
-    retries = 3
-    delay = 1  # Initial delay in seconds
 
     IS_LOGGED_IN = False
     if core.cookies:
         core.session.cookies.update(core.cookies)
-        for attempt in range(retries):
+        try:
             res = await core.session.get(core.logged_in_link, timeout=30)
-            if res is not None:
-                with open("response.html", "w", encoding="utf-8") as f:
-                    f.write(res.text)
+        except:
+            res = None
+            
+        if res is not None:
+            # Save the response as an HTML file
+            with open("response.html", "w", encoding="utf-8") as f:
+                f.write(res.text)
 
-            if IS_LOGGED_IN := validate_login(res):
-                logger.debug("Old session worked fine.")
-                data = bs(res.text, "lxml")
-                status_span = data.find('span', class_='status-block-color')
-                account_status = status_span.text.strip() if status_span else None
-                account_span = data.find_all('span', class_='text-truncate-md')
-                account_email = ""
-                account_id = ""
-                try:
-                    account_email = account_span[1].text.strip() if account_span[1] else None
-                    account_id = account_span[2].text.strip() if account_span[2] else None
-                except:
-                    account_email = account_span[0].text.strip() if account_span[0] else None
-                    account_id = account_span[1].text.strip() if account_span[1] else None
+        if IS_LOGGED_IN := validate_login(res):
+            logger.debug("Old session worked fine.")
+            data = bs(res.text, "lxml")
+            status_span = data.find('span', class_='status-block-color')
+            account_status = status_span.text.strip() if status_span else None
+            print("account_status: ", account_status)
+            account_span = data.find_all('span', class_='text-truncate-md')
+            print("len: ", len(account_span))
+            account_email = ""
+            account_id = ""
+            try:
+                account_email = account_span[1].text.strip() if account_span[1] else None
+                account_id = account_span[2].text.strip() if account_span[2] else None
+            except:
+                account_email = account_span[0].text.strip() if account_span[0] else None
+                account_id = account_span[1].text.strip() if account_span[1] else None
 
-                if account_id:
-                    account_id = account_id.split("ID: ")[1].strip()
-                
-                print("Account Status:", account_status)
-                print("Account Email: ", account_email)
-                print("Account ID: ", account_id)
-               
-                return account_status, account_email, account_id
-            else:
-                logger.debug("Old Session expired!! Trying to login again..")
-                core.session.cookies.clear()
-                
-        await core.session.aclose()
-        await create_session()
+            if account_id:
+                account_id = account_id.split("ID: ")[1].strip()
+            
+            print("Account Status:", account_status)
+            print("Account Email: ", account_email)
+            print("Account ID: ", account_id)
+            return account_status, account_email, account_id
+            
+        else:
+            logger.debug("Old Session expired!! Trying to login again..")
+            core.session.cookies.clear()
 
     if not IS_LOGGED_IN:
         try:
@@ -772,13 +786,13 @@ async def perform_login(max_depth: int = 3) -> tuple[str, str, str] | None:
                 data=await generate_login_payload(data=bs(res.text, "lxml")),
                 timeout=60.0  # Increased timeout
             )
-            print("="*50)
+            print("---------")
             print(res_l.text)
-            print("="*50)
             if '"is2FA":true' in res_l.text:
                 print("OTP verification required")
                 # Add retry logic for OTP verification
-                for attempt in range(retries):
+                max_retries = 3
+                for attempt in range(max_retries):
                     try:
                         res_l = await core.session.post(
                             url=core.otp_verify_link,
@@ -786,16 +800,13 @@ async def perform_login(max_depth: int = 3) -> tuple[str, str, str] | None:
                             timeout=60.0  # Increased timeout
                         )
                         break  # If successful, break the retry loop
-                    except (httpx.ReadTimeout, httpx.ConnectError, httpx.ProxyError) as e:
-                        if attempt < retries - 1:
-                            logger.debug(f"OTP verification error, attempt {attempt + 1}/{retries}: {e}")
-                            await asyncio.sleep(5)
+                    except httpx.ReadTimeout:
+                        if attempt < max_retries - 1:  # If not the last attempt
+                            logger.debug(f"OTP verification timeout, attempt {attempt + 1}/{max_retries}. Retrying...")
+                            await asyncio.sleep(5)  # Wait 5 seconds before retrying
                         else:
                             logger.error("OTP verification failed after all retries")
                             raise
-                    except Exception as e:
-                        logger.error(f"Unexpected error during OTP verification: {e}")
-                        raise
             if validate_login(res_l):
                 logger.debug("Logged-In successfully!")
                 print("login")
@@ -821,18 +832,25 @@ async def perform_login(max_depth: int = 3) -> tuple[str, str, str] | None:
                 print("Account Email: ", account_email)
                 print("Account ID: ", account_id)
                 return account_status, account_email, account_id
-            else:
-                logger.error("Login failed after all attempts")
-                return None
         except httpx.ReadTimeout as e:
             logger.error(f"Connection timeout: {e}")
             # Try to switch proxy and retry login
             logger.info("Attempting to switch proxy due to timeout")
             try:
-                await core.session.aclose()
-                await create_session()
-                logger.info("Switched to new rotating proxy due to timeout, retrying login")
-                return await perform_login(max_depth - 1)
+                new_proxy = await get_rotating_proxy()
+                if new_proxy:
+                    await core.session.aclose()
+                    transport = httpx.AsyncHTTPTransport(retries=3)
+                    core.session = httpx.AsyncClient(
+                        headers=core.base_headers,
+                        transport=transport,
+                        follow_redirects=True,
+                        proxies=new_proxy,
+                        timeout=60.0
+                    )
+                    logger.info("Switched to new rotating proxy due to timeout, retrying login")
+                    # Recursive call to retry login with new proxy
+                    return await perform_login()
             except Exception as proxy_error:
                 logger.error(f"Failed to get new rotating proxy after timeout: {proxy_error}")
             raise
@@ -842,14 +860,24 @@ async def perform_login(max_depth: int = 3) -> tuple[str, str, str] | None:
             if "proxy" in str(e).lower() or "connection" in str(e).lower():
                 logger.info("Attempting to switch proxy due to connection error")
                 try:
-                    await core.session.aclose()
-                    await create_session()
-                    logger.info("Switched to new rotating proxy due to connection error, retrying login")
-                    return await perform_login(max_depth - 1)
+                    new_proxy = await get_rotating_proxy()
+                    if new_proxy:
+                        await core.session.aclose()
+                        transport = httpx.AsyncHTTPTransport(retries=3)
+                        core.session = httpx.AsyncClient(
+                            headers=core.base_headers,
+                            transport=transport,
+                            follow_redirects=True,
+                            proxies=new_proxy,
+                            timeout=60.0
+                        )
+                        logger.info("Switched to new rotating proxy due to connection error, retrying login")
+                        # Recursive call to retry login with new proxy
+                        return await perform_login()
                 except Exception as proxy_error:
                     logger.error(f"Failed to get new rotating proxy after connection error: {proxy_error}")
             raise
-        return None
+
 
 def validate_minute(minute: int) -> bool:
     # return True
@@ -1158,7 +1186,6 @@ async def verify_payment_tmp(amount: int | float, res, failsafe: bool = False) -
     logger.debug("PROCESS_WITHDRAWAL_VERIFICATION -> FAILED -> %s" % amount)
 
 async def process_withdrawal(_type: str, amount: int | float) -> bool:
-    print("==================process_withdrawal==================")
     await perform_login()
     payment_payload = {}
     try:
@@ -1182,10 +1209,7 @@ async def process_withdrawal(_type: str, amount: int | float) -> bool:
         
         # Check if the response content indicates unauthorized access
         # if b"Unauthenticated" in res_r.content or b"error" in res_r.content:
-        #     print("==================unauthenticated==================")
-        #     core.session.cookies.clear()
         #     core.delete_cookies()
-        #     return False
 
         payment_payload = generate_payment_payload(
             data=bs(res_r.text, "lxml"), _type=_type, balance=amount
@@ -1670,8 +1694,8 @@ if __name__ == "__main__":
             if not await check_anticaptcha_key():
                 logger.error("Invalid or insufficient balance on Anti-Captcha API key")
                 return
-            
-            await create_session()
+
+            # Initialize with working proxy
             await perform_login()
 
             broadcast_task = asyncio.create_task(run_background_task(broadcast(), "broadcast"), name="broadcast")
